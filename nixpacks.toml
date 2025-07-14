@@ -2,7 +2,7 @@
 nixPkgs = ['nodejs_18', 'npm-9_x']
 
 [phases.install]
-cmds = ['cd api && npm ci']
+cmds = ['cd api && npm install']
 
 [phases.build]
 cmds = ['echo "No build step required"']
