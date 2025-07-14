@@ -1,42 +1,110 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import io from 'socket.io-client';
 
 // Types
 interface CollabFlowConfig {
-  apiKey: string;
+  publishableKey: string;
   baseUrl?: string;
 }
 
-interface Project {
+interface Room {
   id: string;
   name: string;
   description: string;
   members: string[];
+  cursors: Map<string, CursorData>;
+}
+
+interface CursorData {
+  x: number;
+  y: number;
+  user: {
+    id: string;
+    name: string;
+    color: string;
+  };
 }
 
 interface CollabFlowContextType {
-  createProject: (data: { name: string; description: string }) => Promise<Project>;
-  inviteUsers: (projectId: string, userIds: string[]) => Promise<void>;
-  reviewChanges: (projectId: string) => Promise<any[]>;
-  approveChange: (changeId: string, feedback?: string) => Promise<void>;
-  rejectChange: (changeId: string, feedback: string) => Promise<void>;
+  // Room Management (like Clerk's user management)
+  createRoom: (data: { name: string; description: string }) => Promise<Room>;
+  joinRoom: (roomId: string) => Promise<void>;
+  leaveRoom: (roomId: string) => Promise<void>;
+  inviteUsers: (roomId: string, emails: string[]) => Promise<void>;
+  
+  // Real-time Features
+  cursors: Map<string, CursorData>;
+  onlineUsers: string[];
+  trackCursor: (x: number, y: number) => void;
+  sendMessage: (message: string) => void;
+  
+  // Content Sync
+  content: string;
+  updateContent: (content: string) => void;
+  
+  // State
+  isConnected: boolean;
+  currentRoom: Room | null;
   isLoading: boolean;
 }
 
 // Context
 const CollabFlowContext = createContext<CollabFlowContextType | null>(null);
 
-// Provider Component
+// Provider Component (Like Clerk's ClerkProvider)
 export const CollabFlowProvider: React.FC<{
-  apiUrl?: string;
+  publishableKey: string;
+  baseUrl?: string;
   children: React.ReactNode;
-}> = ({ apiUrl = 'https://api.collabflow.dev', children }) => {
+}> = ({ publishableKey, baseUrl = 'https://api.collabflow.dev', children }) => {
   const [isLoading, setIsLoading] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
+  const [cursors, setCursors] = useState<Map<string, CursorData>>(new Map());
+  const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
+  const [content, setContent] = useState('');
+  const socketRef = useRef<any>(null);
+
+  useEffect(() => {
+    // Initialize socket connection
+    socketRef.current = io(baseUrl, {
+      auth: { publishableKey }
+    });
+
+    socketRef.current.on('connect', () => setIsConnected(true));
+    socketRef.current.on('disconnect', () => setIsConnected(false));
+    
+    socketRef.current.on('cursor-update', (data: CursorData) => {
+      setCursors(prev => new Map(prev.set(data.user.id, data)));
+    });
+    
+    socketRef.current.on('user-joined', (userId: string) => {
+      setOnlineUsers(prev => [...prev, userId]);
+    });
+    
+    socketRef.current.on('user-left', (userId: string) => {
+      setOnlineUsers(prev => prev.filter(id => id !== userId));
+      setCursors(prev => {
+        const newCursors = new Map(prev);
+        newCursors.delete(userId);
+        return newCursors;
+      });
+    });
+    
+    socketRef.current.on('content-update', (newContent: string) => {
+      setContent(newContent);
+    });
+
+    return () => {
+      socketRef.current?.disconnect();
+    };
+  }, [baseUrl, publishableKey]);
 
   const apiCall = async (endpoint: string, options: RequestInit = {}) => {
-    const response = await fetch(`${apiUrl}${endpoint}`, {
+    const response = await fetch(`${baseUrl}${endpoint}`, {
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${publishableKey}`,
         ...options.headers,
       },
       ...options,
@@ -50,56 +118,96 @@ export const CollabFlowProvider: React.FC<{
     return response.json();
   };
 
-  const createProject = async (data: { name: string; description: string }) => {
+  const createRoom = async (data: { name: string; description: string }) => {
     setIsLoading(true);
     try {
-      const result = await apiCall('/projects', {
+      const result = await apiCall('/rooms', {
         method: 'POST',
         body: JSON.stringify(data),
       });
-      return result.project;
+      return result.room;
     } finally {
       setIsLoading(false);
     }
   };
 
-  const inviteUsers = async (projectId: string, userIds: string[]) => {
+  const joinRoom = async (roomId: string) => {
     setIsLoading(true);
     try {
-      await apiCall(`/projects/${projectId}/invite`, {
+      const result = await apiCall(`/rooms/${roomId}/join`, {
         method: 'POST',
-        body: JSON.stringify({ userIds }),
+      });
+      setCurrentRoom(result.room);
+      socketRef.current?.emit('join-room', roomId);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const leaveRoom = async (roomId: string) => {
+    socketRef.current?.emit('leave-room', roomId);
+    setCurrentRoom(null);
+    setCursors(new Map());
+    setOnlineUsers([]);
+  };
+
+  const inviteUsers = async (roomId: string, emails: string[]) => {
+    setIsLoading(true);
+    try {
+      await apiCall(`/rooms/${roomId}/invite`, {
+        method: 'POST',
+        body: JSON.stringify({ emails }),
       });
     } finally {
       setIsLoading(false);
     }
   };
 
-  const reviewChanges = async (projectId: string) => {
-    const result = await apiCall(`/projects/${projectId}/staged-changes`);
-    return result.changes || [];
+  const trackCursor = (x: number, y: number) => {
+    if (socketRef.current && currentRoom) {
+      socketRef.current.emit('cursor-move', {
+        roomId: currentRoom.id,
+        x,
+        y,
+        timestamp: Date.now()
+      });
+    }
   };
 
-  const approveChange = async (changeId: string, feedback?: string) => {
-    await apiCall(`/staged-changes/${changeId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ approve: true, feedback }),
-    });
+  const sendMessage = (message: string) => {
+    if (socketRef.current && currentRoom) {
+      socketRef.current.emit('message', {
+        roomId: currentRoom.id,
+        message,
+        timestamp: Date.now()
+      });
+    }
   };
 
-  const rejectChange = async (changeId: string, feedback: string) => {
-    await apiCall(`/staged-changes/${changeId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ approve: false, feedback }),
-    });
+  const updateContent = (newContent: string) => {
+    setContent(newContent);
+    if (socketRef.current && currentRoom) {
+      socketRef.current.emit('content-change', {
+        roomId: currentRoom.id,
+        content: newContent,
+        timestamp: Date.now()
+      });
+    }
   };
 
   const value = {
-    createProject,
+    createRoom,
+    joinRoom,
+    leaveRoom,
     inviteUsers,
-    reviewChanges,
-    approveChange,
-    rejectChange,
+    cursors,
+    onlineUsers,
+    trackCursor,
+    sendMessage,
+    content,
+    updateContent,
+    isConnected,
+    currentRoom,
     isLoading,
   };
 
@@ -159,57 +267,23 @@ export const CollabEditor: React.FC<{
   );
 };
 
-export const ReviewPanel: React.FC<{
-  projectId: string;
-  className?: string;
-}> = ({ projectId, className = '' }) => {
-  const { reviewChanges, approveChange, rejectChange } = useCollabFlow();
-  const [changes, setChanges] = useState<any[]>([]);
+// Advanced Collaboration Components
+export { default as CollabRoom } from './components/CollabRoom';
 
-  useEffect(() => {
-    reviewChanges(projectId).then(setChanges);
-  }, [projectId]);
+// Cursor Hook for advanced usage
+export const useCursors = () => {
+  const { cursors, trackCursor } = useCollabFlow();
+  return { cursors, trackCursor };
+};
 
-  return (
-    <div className={`review-panel ${className}`}>
-      <h3 className="text-lg font-bold mb-4">Pending Changes ({changes.length})</h3>
-      {changes.map((change) => (
-        <div key={change.id} className="border rounded-lg p-4 mb-4">
-          <div className="flex justify-between items-start mb-2">
-            <div>
-              <h4 className="font-semibold">{change.userName}</h4>
-              <p className="text-sm text-gray-600">{new Date(change.createdAt).toLocaleString()}</p>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => approveChange(change.id)}
-                className="bg-green-500 text-white px-3 py-1 rounded text-sm"
-              >
-                Approve
-              </button>
-              <button
-                onClick={() => {
-                  const feedback = prompt('Rejection reason:');
-                  if (feedback) rejectChange(change.id, feedback);
-                }}
-                className="bg-red-500 text-white px-3 py-1 rounded text-sm"
-              >
-                Reject
-              </button>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <h5 className="font-medium text-red-700">Original</h5>
-              <pre className="bg-red-50 p-2 rounded text-xs">{change.originalContent}</pre>
-            </div>
-            <div>
-              <h5 className="font-medium text-green-700">Proposed</h5>
-              <pre className="bg-green-50 p-2 rounded text-xs">{change.proposedContent}</pre>
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+// Presence Hook
+export const usePresence = () => {
+  const { onlineUsers, isConnected } = useCollabFlow();
+  return { onlineUsers, isConnected };
+};
+
+// Room Hook
+export const useRoom = () => {
+  const { currentRoom, joinRoom, leaveRoom } = useCollabFlow();
+  return { currentRoom, joinRoom, leaveRoom };
 };
