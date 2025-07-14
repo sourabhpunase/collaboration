@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Users, Zap, Eye, Plus, Settings, Key, Webhook, BarChart3, Send, Copy, ExternalLink } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-import { SupabaseService, User } from '../../lib/supabase'
+import { SupabaseService, User } from '../lib/supabase'
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000'
 const DEMO_API_KEY = 'pk_live_demo123456789'

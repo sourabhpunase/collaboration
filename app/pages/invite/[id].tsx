@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
 import { Check, X, Users, Calendar, Mail } from 'lucide-react'
-import { SupabaseService, Invitation } from '../../lib/supabase'
+import { SupabaseService, Invitation } from '../lib/supabase'
 
 export default function InvitePage() {
   const router = useRouter()
