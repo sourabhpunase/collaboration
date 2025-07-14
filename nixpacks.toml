@@ -2,10 +2,10 @@
 nixPkgs = ['nodejs_18', 'npm-9_x']
 
 [phases.install]
-cmds = ['npm ci']
+cmds = ['cd api && npm ci']
 
 [phases.build]
 cmds = ['echo "No build step required"']
 
 [start]
-cmd = 'node saas-server.js'
+cmd = 'cd api && node saas-server.js'
